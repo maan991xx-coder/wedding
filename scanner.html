@@ -155,38 +155,81 @@ async function callScript(params, attempts) {
 async function startScanner() {
   // HTTPS check — camera only works on https or localhost
   if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-    showResult('error','🔒','يجب فتح الموقع عبر HTTPS','الكاميرا لا تعمل إلا على رابط آمن (https)');
+    showResult('error','🔒','يجب فتح الموقع عبر HTTPS','الكاميرا لا تعمل إلا على رابط آمن (https) — افتح الرابط في Safari أو Chrome');
+    return;
+  }
+
+  // Detect in-app browsers (Instagram/WhatsApp/etc) that block the camera
+  const ua = navigator.userAgent || '';
+  if (/Instagram|FBAN|FBAV|WhatsApp|Telegram|Line|Snapchat|Twitter/i.test(ua)) {
+    showResult('error','🌐','افتح الرابط في المتصفح','أنت داخل تطبيق آخر يمنع الكاميرا. اضغط ⋯ ثم «فتح في Safari/Chrome»');
+    return;
+  }
+
+  // Check the browser supports camera APIs at all
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showResult('error','⚠️','المتصفح لا يدعم الكاميرا','جرّب متصفح Chrome أو Safari الحديث، أو استخدم الإدخال اليدوي');
     return;
   }
 
   const startBtn = document.getElementById('start-cam-btn');
   const stopBtn = document.getElementById('stop-cam-btn');
   startBtn.disabled = true;
-  showResult('idle','⏳','جاري تشغيل الكاميرا...','اضغط «سماح» عند ظهور طلب الإذن');
+  showResult('idle','⏳','جاري تشغيل الكاميرا...','اضغط «سماح / Allow» عند ظهور طلب الإذن');
 
+  scanner = new Html5Qrcode('reader');
+  const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+
+  // Attempt 1: back camera via facingMode
   try {
-    scanner = new Html5Qrcode('reader');
-    // facingMode:environment يطلب الكاميرا الخلفية ويُظهر طلب الإذن مباشرة
-    await scanner.start(
-      { facingMode: 'environment' },
-      { fps: 10, qrbox: { width: 250, height: 250 } },
-      onScanSuccess,
-      () => {} // تجاهل أخطاء عدم العثور على رمز
-    );
-    startBtn.style.display = 'none';
-    stopBtn.style.display = 'block';
-    showResult('idle','📷','الكاميرا جاهزة','وجّه الكاميرا نحو رمز QR الضيف');
-  } catch (err) {
-    startBtn.disabled = false;
-    const msg = String(err || '');
-    if (msg.includes('NotAllowedError') || msg.includes('Permission')) {
-      showResult('error','🚫','تم رفض إذن الكاميرا','افتح إعدادات المتصفح واسمح بالكاميرا لهذا الموقع ثم أعد المحاولة');
-    } else if (msg.includes('NotFoundError') || msg.includes('no camera')) {
-      showResult('error','❌','لا توجد كاميرا','تأكد من وجود كاميرا في الجهاز');
-    } else {
-      showResult('error','⚠️','تعذّر تشغيل الكاميرا','جرّب الإدخال اليدوي للكود بالأسفل');
+    await scanner.start({ facingMode: { exact: 'environment' } }, config, onScanSuccess, () => {});
+    return onCameraStarted();
+  } catch (e1) {
+    // Attempt 2: any environment camera (non-exact)
+    try {
+      await scanner.start({ facingMode: 'environment' }, config, onScanSuccess, () => {});
+      return onCameraStarted();
+    } catch (e2) {
+      // Attempt 3: enumerate cameras and pick one
+      try {
+        const cams = await Html5Qrcode.getCameras();
+        if (cams && cams.length) {
+          const cam = cams.find(c => /back|rear|environment/i.test(c.label)) || cams[cams.length - 1];
+          await scanner.start(cam.id, config, onScanSuccess, () => {});
+          return onCameraStarted();
+        }
+        throw new Error('NotFoundError: no cameras');
+      } catch (e3) {
+        startBtn.disabled = false;
+        showCameraError(e3 || e2 || e1);
+      }
     }
   }
+}
+
+function onCameraStarted() {
+  document.getElementById('start-cam-btn').style.display = 'none';
+  document.getElementById('stop-cam-btn').style.display = 'block';
+  showResult('idle','📷','الكاميرا جاهزة','وجّه الكاميرا نحو رمز QR الضيف');
+}
+
+function showCameraError(err) {
+  const msg = (err && (err.name || err.message)) ? String(err.name || '') + ' ' + String(err.message || '') : String(err || '');
+  let icon = '⚠️', title = 'تعذّر تشغيل الكاميرا', detail = 'جرّب الإدخال اليدوي للكود بالأسفل';
+
+  if (/NotAllowedError|Permission|denied/i.test(msg)) {
+    icon = '🚫'; title = 'تم رفض إذن الكاميرا';
+    detail = 'Safari: إعدادات الجوال ← Safari ← الكاميرا ← سماح. Chrome: اضغط 🔒 بجوار الرابط ← الكاميرا ← سماح. ثم أعد المحاولة';
+  } else if (/NotFoundError|no camera|Requested device not found/i.test(msg)) {
+    icon = '❌'; title = 'لم يتم العثور على كاميرا'; detail = 'تأكد أن للجهاز كاميرا وأنها غير مستخدمة من تطبيق آخر';
+  } else if (/NotReadableError|TrackStartError|in use/i.test(msg)) {
+    icon = '📵'; title = 'الكاميرا مشغولة'; detail = 'أغلق أي تطبيق آخر يستخدم الكاميرا ثم أعد المحاولة';
+  } else if (/OverconstrainedError/i.test(msg)) {
+    icon = '🔄'; title = 'مشكلة في اختيار الكاميرا'; detail = 'أعد الضغط على الزر مرة أخرى';
+  }
+
+  // Show the real technical error too, to help diagnose
+  showResult('error', icon, title, detail + '  —  (' + (msg.trim() || 'خطأ غير معروف') + ')');
 }
 
 // ── Stop Scanner ──
