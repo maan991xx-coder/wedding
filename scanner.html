@@ -88,12 +88,20 @@
 
 <div class="scanner-wrap">
 
+  <button id="start-cam-btn" onclick="startScanner()" style="width:100%;padding:16px;background:var(--green,#5c7a2c);color:white;border:none;border-radius:12px;font-family:'Amiri Quran','Amiri',serif;font-size:18px;font-weight:700;cursor:pointer;margin-bottom:14px;display:flex;align-items:center;justify-content:center;gap:8px">
+    📷 تشغيل الكاميرا والبدء بالمسح
+  </button>
+
+  <button id="stop-cam-btn" onclick="stopScanner()" style="display:none;width:100%;padding:12px;background:#c0392b;color:white;border:none;border-radius:12px;font-family:'Amiri Quran','Amiri',serif;font-size:15px;font-weight:700;cursor:pointer;margin-bottom:14px">
+    ⏹️ إيقاف الكاميرا
+  </button>
+
   <div id="reader"></div>
 
   <div class="result-card idle" id="result-card">
     <div class="result-icon" id="result-icon">📷</div>
-    <div class="result-name" id="result-name">في انتظار المسح</div>
-    <div class="result-code" id="result-code">وجّه الكاميرا نحو رمز QR</div>
+    <div class="result-name" id="result-name">اضغط «تشغيل الكاميرا» للبدء</div>
+    <div class="result-code" id="result-code">سيطلب المتصفح إذن الكاميرا — اضغط «سماح»</div>
     <div class="result-msg" id="result-msg"></div>
   </div>
 
@@ -143,20 +151,51 @@ async function callScript(params, attempts) {
   throw lastErr;
 }
 
-// ── Init Scanner ──
-function initScanner() {
-  scanner = new Html5Qrcode('reader');
-  Html5Qrcode.getCameras().then(cameras => {
-    if (!cameras.length) { showResult('error','❌','لا يوجد كاميرا','تعذّر الوصول إلى الكاميرا'); return; }
-    // Prefer back camera
-    const cam = cameras.find(c => c.label.toLowerCase().includes('back')) || cameras[cameras.length-1];
-    scanner.start(
-      cam.id,
-      { fps:10, qrbox:{width:250,height:250} },
+// ── Start Scanner (triggered by user tap → required for camera permission) ──
+async function startScanner() {
+  // HTTPS check — camera only works on https or localhost
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+    showResult('error','🔒','يجب فتح الموقع عبر HTTPS','الكاميرا لا تعمل إلا على رابط آمن (https)');
+    return;
+  }
+
+  const startBtn = document.getElementById('start-cam-btn');
+  const stopBtn = document.getElementById('stop-cam-btn');
+  startBtn.disabled = true;
+  showResult('idle','⏳','جاري تشغيل الكاميرا...','اضغط «سماح» عند ظهور طلب الإذن');
+
+  try {
+    scanner = new Html5Qrcode('reader');
+    // facingMode:environment يطلب الكاميرا الخلفية ويُظهر طلب الإذن مباشرة
+    await scanner.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: { width: 250, height: 250 } },
       onScanSuccess,
-      () => {} // ignore errors
+      () => {} // تجاهل أخطاء عدم العثور على رمز
     );
-  }).catch(() => showResult('error','❌','خطأ','لم يُسمح بالوصول إلى الكاميرا'));
+    startBtn.style.display = 'none';
+    stopBtn.style.display = 'block';
+    showResult('idle','📷','الكاميرا جاهزة','وجّه الكاميرا نحو رمز QR الضيف');
+  } catch (err) {
+    startBtn.disabled = false;
+    const msg = String(err || '');
+    if (msg.includes('NotAllowedError') || msg.includes('Permission')) {
+      showResult('error','🚫','تم رفض إذن الكاميرا','افتح إعدادات المتصفح واسمح بالكاميرا لهذا الموقع ثم أعد المحاولة');
+    } else if (msg.includes('NotFoundError') || msg.includes('no camera')) {
+      showResult('error','❌','لا توجد كاميرا','تأكد من وجود كاميرا في الجهاز');
+    } else {
+      showResult('error','⚠️','تعذّر تشغيل الكاميرا','جرّب الإدخال اليدوي للكود بالأسفل');
+    }
+  }
+}
+
+// ── Stop Scanner ──
+async function stopScanner() {
+  try { if (scanner) { await scanner.stop(); scanner.clear(); } } catch(e) {}
+  document.getElementById('start-cam-btn').style.display = 'block';
+  document.getElementById('start-cam-btn').disabled = false;
+  document.getElementById('stop-cam-btn').style.display = 'none';
+  showResult('idle','📷','تم إيقاف الكاميرا','اضغط «تشغيل الكاميرا» للبدء مجدداً');
 }
 
 // ── QR Scan Success ──
@@ -238,8 +277,8 @@ function addToLog(emoji, name, status) {
     </div>`).join('');
 }
 
-// Start
-window.addEventListener('load', initScanner);
+// لا نشغّل الكاميرا تلقائياً — يجب نقرة المستخدم لطلب الإذن
+// المستخدم يضغط زر «تشغيل الكاميرا»
 </script>
 </body>
 </html>
